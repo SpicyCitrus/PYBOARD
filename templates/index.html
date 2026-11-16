@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>PYBOARD | Web Soundboard</title>
+
+    <link rel="stylesheet" href="/style.css">
+
+    <script>
+        window.PYBOARD_TOKEN = "__TOKEN__";
+    </script>
+
+    <script src="/app.js" defer></script>
+</head>
+
+<body>
+
+<header class="header">
+
+    <div class="branding">
+        <h1>♫ PYBOARD</h1>
+        <p>Made with ❤️ by Cozy</p>
+    </div>
+
+    <button class="stop-button" onclick="stopSound()">
+        ■ STOP AUDIO
+    </button>
+
+</header>
+
+<main class="container">
+
+    <section class="welcome">
+        <h2>Your Soundboard</h2>
+        <p>Choose a sound below to play it through PYBOARD.</p>
+    </section>
+
+    <section class="toolbar">
+
+        <input
+            type="search"
+            id="search"
+            placeholder="Search sounds..."
+            autocomplete="off"
+        >
+
+        <button class="refresh-button" onclick="loadSounds()">
+            ↻ Refresh
+        </button>
+
+    </section>
+
+    <section id="sound-grid" class="sound-grid">
+
+        <div class="empty">
+            Loading sounds...
+        </div>
+
+    </section>
+
+    <section class="status">
+        <span class="status-dot"></span>
+        <span id="status">Connecting to PYBOARD...</span>
+    </section>
+
+</main>
+
+<footer>
+    PYBOARD Web UI · Made with ❤️ by Cozy
+</footer>
+
+</body>
+</html>
