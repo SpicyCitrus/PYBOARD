@@ -3,15 +3,17 @@ const statusText = document.getElementById("status");
 const search = document.getElementById("search");
 
 let sounds = [];
+let lastSignature = "";
+let loading = false;
 
 function setStatus(message) {
     statusText.textContent = message;
 }
 
 async function api(endpoint, data = {}) {
-
     const response = await fetch(endpoint, {
         method: "POST",
+        cache: "no-store",
         headers: {
             "Content-Type": "application/json",
             "X-PYBOARD-TOKEN": window.PYBOARD_TOKEN
@@ -28,28 +30,43 @@ async function api(endpoint, data = {}) {
     return result;
 }
 
-async function loadSounds() {
+async function loadSounds(silent = false) {
+    if (loading) return;
+    loading = true;
 
     try {
-        const response = await fetch("/api/sounds");
+        const response = await fetch(`/api/sounds?t=${Date.now()}`, {
+            cache: "no-store"
+        });
 
         if (!response.ok) {
             throw new Error("Could not load sounds");
         }
 
-        sounds = await response.json();
+        const updatedSounds = await response.json();
+        const signature = JSON.stringify(updatedSounds);
 
-        renderSounds();
+        if (signature !== lastSignature) {
+            sounds = updatedSounds;
+            lastSignature = signature;
+            renderSounds();
+        }
 
-        setStatus(`${sounds.length} sounds available`);
-
+        if (!silent) {
+            setStatus(`${sounds.length} sounds available`);
+        } else if (document.visibilityState === "visible") {
+            setStatus(`${sounds.length} sounds available`);
+        }
     } catch (error) {
-        setStatus(error.message);
+        if (!silent) {
+            setStatus(error.message);
+        }
+    } finally {
+        loading = false;
     }
 }
 
 function renderSounds() {
-
     grid.replaceChildren();
 
     const query = search.value.toLowerCase();
@@ -59,7 +76,6 @@ function renderSounds() {
     );
 
     if (filtered.length === 0) {
-
         const empty = document.createElement("div");
         empty.className = "empty";
         empty.textContent = sounds.length
@@ -71,7 +87,6 @@ function renderSounds() {
     }
 
     for (const sound of filtered) {
-
         const card = document.createElement("div");
         card.className = "sound-card";
 
@@ -89,64 +104,46 @@ function renderSounds() {
         const play = document.createElement("button");
         play.className = "play-button";
         play.textContent = "▶ PLAY";
-
-        play.addEventListener("click", () => {
-            playSound(sound.file);
-        });
+        play.addEventListener("click", () => playSound(sound.file));
 
         const remove = document.createElement("button");
         remove.className = "delete-button";
         remove.textContent = "DELETE";
-
-        remove.addEventListener("click", () => {
-            deleteSound(sound.file);
-        });
+        remove.addEventListener("click", () => deleteSound(sound.file));
 
         actions.append(play, remove);
-
         card.append(icon, name, actions);
-
         grid.appendChild(card);
     }
 }
 
 async function playSound(file) {
-
     try {
-        await api("/api/play", {file});
-
+        await api("/api/play", { file });
         setStatus("Playing: " + file.replace(".mp3", ""));
-
     } catch (error) {
         setStatus(error.message);
     }
 }
 
 async function stopSound() {
-
     try {
         await api("/api/stop");
-
         setStatus("Playback stopped");
-
     } catch (error) {
         setStatus(error.message);
     }
 }
 
 async function deleteSound(file) {
-
     if (!confirm(`Are you sure you want to delete ${file}?`)) {
         return;
     }
 
     try {
-        await api("/api/delete", {file});
-
+        await api("/api/delete", { file });
         setStatus("Sound deleted");
-
         await loadSounds();
-
     } catch (error) {
         setStatus(error.message);
     }
@@ -154,4 +151,15 @@ async function deleteSound(file) {
 
 search.addEventListener("input", renderSounds);
 
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+        loadSounds();
+    }
+});
+
 loadSounds();
+setInterval(() => {
+    if (document.visibilityState === "visible") {
+        loadSounds(true);
+    }
+}, 2500);
