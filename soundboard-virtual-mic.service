@@ -1,7 +1,6 @@
 [Unit]
-Description=PYBOARD Persistent Virtual Microphone
-After=pipewire.service pipewire-pulse.service
-Wants=pipewire-pulse.service
+Description=PYBOARD Virtual Microphone
+After=sound.target
 
 [Service]
 Type=oneshot
