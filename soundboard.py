@@ -2,21 +2,25 @@ import sys
 import re
 import html
 import shutil
-import shlex
-import urllib.request
-import urllib.parse
 import subprocess
 import tkinter as tk
+import urllib.request
+import urllib.parse
 from tkinter import ttk, messagebox
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
 SOUNDS = BASE / "soundboards"
-CONFIG = Path.home() / ".config" / "soundboard"
-MIC_CONFIG = CONFIG / "virtual-mic.env"
+
+CONFIG = Path.home() / ".config" / "pyboard"
+MIC_CONFIG = CONFIG / "virtual-mic.conf"
+
 SERVICE = "soundboard-virtual-mic.service"
 
-SOUNDS.mkdir(exist_ok=True)
+MIC_NAME = "PYBOARD_Mic"
+SINK_NAME = "PYBOARD_Sink"
+
+SOUNDS.mkdir(parents=True, exist_ok=True)
 
 BG = "#151722"
 PANEL = "#202437"
@@ -53,13 +57,32 @@ def clean_name(name):
     return name[:90] or "sound"
 
 
+def virtual_mic_running():
+    if not shutil.which("pactl"):
+        return False
+
+    result = command(["pactl", "list", "short", "sources"])
+
+    if not result or result.returncode != 0:
+        return False
+
+    return any(
+        line.split()[1] == MIC_NAME
+        for line in result.stdout.splitlines()
+        if len(line.split()) >= 2
+    )
+
+
 def download_sound(url):
     parsed = urllib.parse.urlparse(url)
 
     if parsed.scheme not in ("http", "https"):
         raise ValueError("Invalid URL.")
 
-    if parsed.hostname not in ("myinstants.com", "www.myinstants.com"):
+    if parsed.hostname not in (
+        "myinstants.com",
+        "www.myinstants.com"
+    ):
         raise ValueError("Please use a Myinstants sound page URL.")
 
     request = urllib.request.Request(
@@ -91,13 +114,17 @@ def download_sound(url):
     audio_url = urllib.parse.urljoin(url, matches[0])
     audio = urllib.parse.urlparse(audio_url)
 
-    if audio.hostname not in ("myinstants.com", "www.myinstants.com"):
+    if audio.hostname not in (
+        "myinstants.com",
+        "www.myinstants.com"
+    ):
         raise ValueError("Unexpected audio download host.")
 
     filename = clean_name(Path(audio.path).stem)
     destination = SOUNDS / f"{filename}.mp3"
 
     index = 1
+
     while destination.exists():
         destination = SOUNDS / f"{filename}_{index}.mp3"
         index += 1
@@ -122,6 +149,7 @@ def download_sound(url):
         raise ValueError("The downloaded file does not appear to be an MP3.")
 
     destination.write_bytes(data)
+
     return destination
 
 
@@ -132,48 +160,35 @@ def downloader():
     print("=" * 45)
     print()
     print("Paste a Myinstants sound link:")
+
     url = input("> ").strip()
 
     try:
         print("\nDownloading...")
         result = download_sound(url)
         print(f"\nDownloaded successfully: {result.name}")
+
     except Exception as error:
         print(f"\nDownload failed: {error}")
 
     input("\nPress Enter to close...")
 
 
-def microphones():
-    result = command(["pactl", "list", "short", "sources"])
-
-    if not result or result.returncode != 0:
-        return []
-
-    found = []
-
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            name = parts[1]
-            if name != "SoundboardMic" and not name.endswith(".monitor"):
-                found.append(name)
-
-    return found
-
-
 class Pyboard:
 
     def __init__(self, root):
         self.root = root
+
         self.root.title("PYBOARD")
         self.root.geometry("820x590")
         self.root.minsize(600, 440)
         self.root.configure(bg=BG)
+
         self.process = None
 
         self.style = ttk.Style()
         self.style.theme_use("clam")
+
         self.style.configure(
             "TCombobox",
             fieldbackground=CARD,
@@ -184,6 +199,7 @@ class Pyboard:
 
         self.build()
         self.refresh()
+
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def button(self, parent, text, callback, color=ACCENT):
@@ -251,7 +267,11 @@ class Pyboard:
         ).pack(side="right")
 
         self.container = tk.Frame(self.root, bg=BG)
-        self.container.pack(fill="both", expand=True, padx=22)
+        self.container.pack(
+            fill="both",
+            expand=True,
+            padx=22
+        )
 
         self.status = tk.Label(
             self.root,
@@ -262,6 +282,7 @@ class Pyboard:
             padx=15,
             pady=11
         )
+
         self.status.pack(side="bottom", fill="x")
 
     def refresh(self):
@@ -282,6 +303,7 @@ class Pyboard:
                 bg=BG,
                 justify="center"
             ).pack(expand=True)
+
             self.status.config(text="0 sounds available")
             return
 
@@ -321,6 +343,7 @@ class Pyboard:
         )
 
         canvas.configure(yscrollcommand=scrollbar.set)
+
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
@@ -389,19 +412,44 @@ class Pyboard:
                 "--force-window=no"
             ]
 
-            if MIC_CONFIG.exists():
-                args.append("--audio-device=pulse/SoundboardSink")
+            if virtual_mic_running():
+                args.append(f"--audio-device=pulse/{SINK_NAME}")
 
             args.append(str(sound))
 
         elif selected_player == "ffplay":
             args = [
-                "ffplay", "-nodisp", "-autoexit",
-                "-loglevel", "error", str(sound)
+                "ffplay",
+                "-nodisp",
+                "-autoexit",
+                "-loglevel",
+                "error"
             ]
 
+            if virtual_mic_running():
+                args.extend([
+                    "-f",
+                    "pulse",
+                    "-i",
+                    SINK_NAME
+                ])
+
+            args.append(str(sound))
+
         else:
-            args = ["cvlc", "--play-and-exit", str(sound)]
+            args = [
+                "cvlc",
+                "--play-and-exit"
+            ]
+
+            if virtual_mic_running():
+                args.extend([
+                    "--aout=pulse",
+                    "--pulse-audio-device",
+                    SINK_NAME
+                ])
+
+            args.append(str(sound))
 
         try:
             self.process = subprocess.Popen(
@@ -409,7 +457,9 @@ class Pyboard:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
+
             self.status.config(text=f"Playing: {sound.stem}")
+
         except OSError as error:
             messagebox.showerror("Playback error", str(error))
 
@@ -432,6 +482,7 @@ class Pyboard:
         try:
             sound.unlink()
             self.refresh()
+
         except OSError as error:
             messagebox.showerror("Delete error", str(error))
 
@@ -443,7 +494,10 @@ class Pyboard:
             ("kitty", [python, script, "--download"]),
             ("alacritty", ["-e", python, script, "--download"]),
             ("konsole", ["-e", python, script, "--download"]),
-            ("xfce4-terminal", ["-e", f"{shlex.quote(python)} {shlex.quote(script)} --download"]),
+            (
+                "xfce4-terminal",
+                ["-e", f'"{python}" "{script}" --download']
+            ),
             ("gnome-terminal", ["--", python, script, "--download"]),
             ("foot", ["-e", python, script, "--download"]),
             ("xterm", ["-e", python, script, "--download"]),
@@ -458,6 +512,7 @@ class Pyboard:
                     subprocess.Popen([executable] + args)
                     self.status.config(text="Downloader opened")
                     return
+
                 except OSError:
                     pass
 
@@ -468,8 +523,9 @@ class Pyboard:
 
     def settings(self):
         window = tk.Toplevel(self.root)
+
         window.title("PYBOARD Settings")
-        window.geometry("510x370")
+        window.geometry("510x390")
         window.configure(bg=BG)
         window.transient(self.root)
         window.grab_set()
@@ -480,60 +536,43 @@ class Pyboard:
             font=("Arial", 19, "bold"),
             fg=WHITE,
             bg=BG
-        ).pack(pady=(24, 8))
+        ).pack(pady=(24, 12))
+
+        running = virtual_mic_running()
+
+        status_text = (
+            "Virtual microphone is RUNNING"
+            if running
+            else "Virtual microphone is STOPPED"
+        )
+
+        status_color = GREEN if running else RED
+
+        status_label = tk.Label(
+            window,
+            text=status_text,
+            font=("Arial", 11, "bold"),
+            fg=status_color,
+            bg=BG
+        )
+
+        status_label.pack(pady=10)
 
         tk.Label(
             window,
-            text="Physical microphone",
+            text=f"Microphone: {MIC_NAME}\nAudio output: {SINK_NAME}",
             fg=MUTED,
-            bg=BG
-        ).pack(pady=8)
-
-        sources = microphones()
-        selected = tk.StringVar()
-
-        try:
-            if MIC_CONFIG.exists():
-                values = shlex.split(
-                    MIC_CONFIG.read_text(encoding="utf-8").split("=", 1)[1].strip()
-                )
-                if values:
-                    selected.set(values[0])
-        except (OSError, ValueError, IndexError):
-            pass
-
-        dropdown = ttk.Combobox(
-            window,
-            textvariable=selected,
-            values=sources,
-            state="readonly",
-            width=52
-        )
-        dropdown.pack(pady=8)
-
-        if selected.get() not in sources:
-            selected.set(sources[0] if sources else "")
+            bg=BG,
+            justify="center"
+        ).pack(pady=10)
 
         def enable():
-            source = selected.get()
-
-            if not source:
-                messagebox.showerror(
-                    "No microphone",
-                    "No physical microphone was found."
-                )
-                return
-
-            CONFIG.mkdir(parents=True, exist_ok=True)
-
-            MIC_CONFIG.write_text(
-                "MIC_SOURCE=" + shlex.quote(source) + "\n",
-                encoding="utf-8"
-            )
-
             result = command([
-                "systemctl", "--user",
-                "enable", "--now", SERVICE
+                "systemctl",
+                "--user",
+                "enable",
+                "--now",
+                SERVICE
             ], timeout=30)
 
             if not result or result.returncode != 0:
@@ -543,16 +582,24 @@ class Pyboard:
                 )
                 return
 
+            status_label.config(
+                text="Virtual microphone is RUNNING",
+                fg=GREEN
+            )
+
             messagebox.showinfo(
                 "PYBOARD",
-                "Virtual microphone enabled!\n\n"
-                "Select SoundboardMic in Discord or your game."
+                f"Virtual microphone enabled!\n\n"
+                f"Select {MIC_NAME} in Discord, OBS, or your game."
             )
 
         def disable():
             result = command([
-                "systemctl", "--user",
-                "disable", "--now", SERVICE
+                "systemctl",
+                "--user",
+                "disable",
+                "--now",
+                SERVICE
             ], timeout=30)
 
             if not result or result.returncode != 0:
@@ -562,6 +609,11 @@ class Pyboard:
                 )
                 return
 
+            status_label.config(
+                text="Virtual microphone is STOPPED",
+                fg=RED
+            )
+
             messagebox.showinfo(
                 "PYBOARD",
                 "Virtual microphone disabled."
@@ -569,7 +621,7 @@ class Pyboard:
 
         self.button(
             window,
-            "Enable Persistent Virtual Microphone",
+            "Enable Virtual Microphone",
             enable,
             GREEN
         ).pack(pady=(25, 8))
@@ -583,12 +635,12 @@ class Pyboard:
 
         tk.Label(
             window,
-            text="Your microphone will start automatically at login.\n"
-                 "Select SoundboardMic as your voice input device.",
+            text="Your virtual microphone can start automatically at login.\n"
+                 "Your existing audio devices will remain installed.",
             fg=MUTED,
             bg=BG,
             justify="center"
-        ).pack(pady=15)
+        ).pack(pady=18)
 
     def close(self):
         self.stop()
