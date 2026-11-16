@@ -15,12 +15,14 @@ SOUNDS = BASE / "soundboards"
 CONFIG = Path.home() / ".config" / "pyboard"
 MIC_CONFIG = CONFIG / "virtual-mic.conf"
 
-SERVICE = "soundboard-virtual-mic.service"
-
 MIC_NAME = "PYBOARD_Mic"
 SINK_NAME = "PYBOARD_Sink"
+SOUNDBOARD_SINK = "PYBOARD_Soundboard"
+
+SERVICE = "soundboard-virtual-mic.service"
 
 SOUNDS.mkdir(parents=True, exist_ok=True)
+CONFIG.mkdir(parents=True, exist_ok=True)
 
 BG = "#151722"
 PANEL = "#202437"
@@ -394,62 +396,31 @@ class Pyboard:
         ).pack(side="left", padx=3)
 
     def play(self, sound):
+        if not virtual_mic_running():
+            messagebox.showwarning(
+                "Virtual microphone not running",
+                "Start the PYBOARD virtual microphone first."
+            )
+            return
+
         selected_player = player()
 
         if not selected_player:
             messagebox.showerror(
                 "Missing player",
-                "Install mpv, ffmpeg, or VLC."
+                "Install mpv."
             )
             return
 
         self.stop()
 
-        if selected_player == "mpv":
-            args = [
-                "mpv",
-                "--no-terminal",
-                "--force-window=no"
-            ]
-
-            if virtual_mic_running():
-                args.append(f"--audio-device=pulse/{SINK_NAME}")
-
-            args.append(str(sound))
-
-        elif selected_player == "ffplay":
-            args = [
-                "ffplay",
-                "-nodisp",
-                "-autoexit",
-                "-loglevel",
-                "error"
-            ]
-
-            if virtual_mic_running():
-                args.extend([
-                    "-f",
-                    "pulse",
-                    "-i",
-                    SINK_NAME
-                ])
-
-            args.append(str(sound))
-
-        else:
-            args = [
-                "cvlc",
-                "--play-and-exit"
-            ]
-
-            if virtual_mic_running():
-                args.extend([
-                    "--aout=pulse",
-                    "--pulse-audio-device",
-                    SINK_NAME
-                ])
-
-            args.append(str(sound))
+        args = [
+            "mpv",
+            "--no-terminal",
+            "--force-window=no",
+            f"--audio-device=pulse/{SOUNDBOARD_SINK}",
+            str(sound)
+        ]
 
         try:
             self.process = subprocess.Popen(
@@ -560,7 +531,8 @@ class Pyboard:
 
         tk.Label(
             window,
-            text=f"Microphone: {MIC_NAME}\nAudio output: {SINK_NAME}",
+            text=f"Microphone: {MIC_NAME}\n"
+                 f"Soundboard output: {SOUNDBOARD_SINK}",
             fg=MUTED,
             bg=BG,
             justify="center"
@@ -635,8 +607,8 @@ class Pyboard:
 
         tk.Label(
             window,
-            text="Your virtual microphone can start automatically at login.\n"
-                 "Your existing audio devices will remain installed.",
+            text="Your voice and soundboard audio are combined.\n"
+                 "Soundboard audio is also sent to your speakers.",
             fg=MUTED,
             bg=BG,
             justify="center"
