@@ -1,141 +1,181 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="PYBOARD"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pyboard"
 CONFIG_FILE="$CONFIG_DIR/virtual-mic.conf"
 STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/pyboard-$UID"
 STATE_FILE="$STATE_DIR/virtual-mic.state"
 
-mkdir -p "$CONFIG_DIR" "$STATE_DIR"
-
-# Default configuration
 MIC_NAME="PYBOARD_Mic"
 SINK_NAME="PYBOARD_Sink"
-SET_DEFAULT="false"
+SOUNDBOARD_SINK="PYBOARD_Soundboard"
 
-# Load optional user configuration
+mkdir -p "$CONFIG_DIR" "$STATE_DIR"
+
+PHYSICAL_SOURCE=""
+OUTPUT_SINK=""
+
 if [[ -f "$CONFIG_FILE" ]]; then
-    # shellcheck disable=SC1090
     source "$CONFIG_FILE"
 fi
 
-require_pactl() {
+require_audio() {
     if ! command -v pactl >/dev/null 2>&1; then
         echo "ERROR: pactl is not installed."
-        echo "Install pulseaudio-utils or the equivalent for your distribution."
         exit 1
     fi
 
     if ! pactl info >/dev/null 2>&1; then
-        echo "ERROR: No running PulseAudio-compatible audio server."
+        echo "ERROR: No PulseAudio-compatible audio server running."
         exit 1
     fi
 }
 
 module_exists() {
-    pactl list short sources | awk '{print $2}' |
-        grep -Fxq "${MIC_NAME}"
+    pactl list short sources |
+        awk '{print $2}' |
+        grep -Fxq "$MIC_NAME"
+}
+
+load_module() {
+    local name="$1"
+    shift
+
+    local id
+    id=$(pactl load-module "$@") || {
+        echo "ERROR: Could not load $name."
+        stop_mic
+        exit 1
+    }
+
+    printf '%s|%s\n' "$id" "$name" >> "$STATE_FILE"
 }
 
 start_mic() {
-    require_pactl
+    require_audio
 
     if module_exists; then
         echo "PYBOARD virtual microphone is already running."
         return
     fi
 
-    echo "Creating PYBOARD virtual microphone..."
+    if [[ -f "$STATE_FILE" ]]; then
+        stop_mic
+    fi
 
-    local sink_module source_module
+    PHYSICAL_SOURCE="${PHYSICAL_SOURCE:-$(pactl get-default-source)}"
+    OUTPUT_SINK="${OUTPUT_SINK:-$(pactl get-default-sink)}"
 
-    sink_module=$(pactl load-module module-null-sink \
-        sink_name="$SINK_NAME" \
-        sink_properties="device.description=PYBOARD_Virtual_Mic") || {
-        echo "ERROR: Could not create virtual sink."
+    if [[ -z "$PHYSICAL_SOURCE" || -z "$OUTPUT_SINK" ]]; then
+        echo "ERROR: Could not detect your microphone or speakers."
         exit 1
-    }
+    fi
 
-    if ! source_module=$(pactl load-module module-remap-source \
+    echo "Creating PYBOARD audio mixer..."
+    echo "Microphone: $PHYSICAL_SOURCE"
+    echo "Speakers: $OUTPUT_SINK"
+
+    : > "$STATE_FILE"
+
+    load_module "combined-sink" \
+        module-null-sink \
+        sink_name="$SINK_NAME" \
+        sink_properties=device.description=PYBOARD_Mixed_Audio
+
+    load_module "soundboard-sink" \
+        module-null-sink \
+        sink_name="$SOUNDBOARD_SINK" \
+        sink_properties=device.description=PYBOARD_Soundboard
+
+    load_module "physical-microphone-loopback" \
+        module-loopback \
+        source="$PHYSICAL_SOURCE" \
+        sink="$SINK_NAME" \
+        latency_msec=20
+
+    load_module "soundboard-microphone-loopback" \
+        module-loopback \
+        source="$SOUNDBOARD_SINK.monitor" \
+        sink="$SINK_NAME" \
+        latency_msec=20
+
+    load_module "soundboard-speaker-loopback" \
+        module-loopback \
+        source="$SOUNDBOARD_SINK.monitor" \
+        sink="$OUTPUT_SINK" \
+        latency_msec=20
+
+    load_module "combined-microphone" \
+        module-remap-source \
         master="$SINK_NAME.monitor" \
         source_name="$MIC_NAME" \
-        source_properties="device.description=PYBOARD_Microphone"); then
-        pactl unload-module "$sink_module" || true
-        echo "ERROR: Could not create virtual microphone."
-        exit 1
-    fi
+        source_properties=device.description=PYBOARD_Microphone
 
-    printf '%s\n%s\n' "$sink_module" "$source_module" > "$STATE_FILE"
-
-    if [[ "$SET_DEFAULT" == "true" ]]; then
-        pactl set-default-source "$MIC_NAME"
-    fi
-
-    echo
-    echo "PYBOARD virtual microphone created successfully!"
-    echo "Microphone: $MIC_NAME"
-    echo "Audio output: $SINK_NAME"
-    echo
-    echo "Select $MIC_NAME in Discord, OBS, or your other applications."
+    echo ""
+    echo "PYBOARD virtual microphone is ready!"
+    echo ""
+    echo "Select this microphone in your applications:"
+    echo "  $MIC_NAME"
+    echo ""
+    echo "Play soundboard audio through:"
+    echo "  $SOUNDBOARD_SINK"
+    echo ""
+    echo "Your physical microphone remains available."
+    echo "Soundboard audio is also sent to your speakers."
 }
 
 stop_mic() {
-    require_pactl
+    require_audio
 
     if [[ ! -f "$STATE_FILE" ]]; then
-        echo "No PYBOARD-managed microphone instance found."
+        echo "No PYBOARD audio mixer state found."
         return
     fi
 
-    mapfile -t MODULES < "$STATE_FILE"
+    echo "Stopping PYBOARD audio mixer..."
 
-    # Unload ONLY the modules created by this script.
-    for module in "${MODULES[@]}"; do
-        if [[ "$module" =~ ^[0-9]+$ ]]; then
-            pactl unload-module "$module" 2>/dev/null || true
+    local temp
+    temp=$(mktemp)
+
+    tac "$STATE_FILE" > "$temp"
+
+    while IFS='|' read -r id expected; do
+        [[ "$id" =~ ^[0-9]+$ ]] || continue
+
+        local current
+        current=$(pactl list short modules |
+            awk -v id="$id" '$1 == id {print $0}')
+
+        if [[ -n "$current" && "$current" == *"$expected"* ]]; then
+            pactl unload-module "$id" || true
         fi
-    done
+    done < "$temp"
 
-    rm -f "$STATE_FILE"
+    rm -f "$temp" "$STATE_FILE"
 
-    echo "PYBOARD virtual microphone stopped."
-    echo "Your existing audio drivers and devices were not removed."
+    echo "PYBOARD audio mixer stopped."
+    echo "Existing audio devices were not removed."
 }
 
 status_mic() {
-    require_pactl
+    require_audio
 
-    echo "=== PYBOARD Virtual Microphone ==="
+    echo "PYBOARD Audio Mixer"
+    echo "==================="
 
     if module_exists; then
         echo "Status: RUNNING"
-        echo "Device: $MIC_NAME"
     else
         echo "Status: STOPPED"
     fi
 
-    echo
-    echo "Available recording devices:"
-    pactl list short sources
-}
+    echo ""
+    echo "Virtual microphone:"
+    pactl list short sources | grep -F "$MIC_NAME" || true
 
-configure_mic() {
-    mkdir -p "$CONFIG_DIR"
-
-    cat > "$CONFIG_FILE" <<EOF
-# PYBOARD virtual microphone configuration
-
-MIC_NAME="$MIC_NAME"
-SINK_NAME="$SINK_NAME"
-
-# Set to true to make PYBOARD the default microphone.
-# This changes the default source, not your installed drivers.
-SET_DEFAULT="$SET_DEFAULT"
-EOF
-
-    echo "Configuration saved to:"
-    echo "$CONFIG_FILE"
+    echo ""
+    echo "Soundboard output:"
+    pactl list short sinks | grep -F "$SOUNDBOARD_SINK" || true
 }
 
 case "${1:-status}" in
@@ -152,11 +192,8 @@ case "${1:-status}" in
     status)
         status_mic
         ;;
-    configure)
-        configure_mic
-        ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|configure}"
+        echo "Usage: $0 {start|stop|restart|status}"
         exit 1
         ;;
 esac
